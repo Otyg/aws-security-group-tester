@@ -19,18 +19,20 @@ def main():
     argument_parser = ArgumentParser(description='Verify AWS security group configuration for instances')
     argument_parser.add_argument('-v', '--verbose', action='store_true', dest='verbose', default=False,
                                  help='Turn on verbose output')
-    argument_parser.add_argument('--security-group-directory',
-                                 help='Read security groups from directory with json-files, instead of running configuration')
+    argument_parser.add_argument('--security-groups',
+                                 help='Path to security group json(s), instead of running configuration')
+    argument_parser.add_argument('--expected-rules',
+                                 help='Path to expected rules to test against in json-file(s)',
+                                 default='expected_rules.json')
     arguments = argument_parser.parse_args()
     verbose = arguments.verbose
 
-    if arguments.security_group_directory is not None:
+    if arguments.security_groups is not None:
         check_running = False
-        load_security_groups_from_directory(arguments.security_group_directory)
+        load_security_groups_from_directory(arguments.security_groups)
     set_instances_and_security_groups()
 
-    with open('expected_rules.json') as expected_rules:
-        rules = json.load(expected_rules)
+    rules = load_expected_rules_from_directory(arguments.expected_rules)
     status = 0
     for rule in rules:
         allowed = 'Allow' if rule['IsAllowed'] else 'Deny'
@@ -43,12 +45,34 @@ def main():
     sys.exit(status)
 
 
-def load_security_groups_from_directory(rules_directory):
-    files = glob.glob(rules_directory + '*.json')
-    for file_name in files:
-        with open(file_name) as security_group:
-            sg = json.load(security_group)['SecurityGroups'][0]
-            security_groups[sg['GroupId']] = sg
+def load_security_groups_from_directory(security_groups_path):
+    if not security_groups_path.endswith('.json'):
+        files = glob.glob(security_groups_path + '*.json')
+        for file_name in files:
+            load_security_group_from_file(file_name)
+    else:
+        load_security_group_from_file(security_groups_path)
+
+
+def load_security_group_from_file(file_name):
+    sg = load_json_from_file(file_name)['SecurityGroups'][0]
+    security_groups[sg['GroupId']] = sg
+
+
+def load_json_from_file(file_name):
+    with open(file_name) as json_object:
+        return json.load(json_object)
+
+
+def load_expected_rules_from_directory(expected_rules_path):
+    rules = []
+    if not expected_rules_path.endswith('.json'):
+        files = glob.glob(expected_rules_path + '*.json')
+        for file_name in files:
+            rules.extend(load_json_from_file(file_name))
+    else:
+        rules.extend(load_json_from_file(expected_rules_path))
+    return rules
 
 
 def set_instances_and_security_groups():
