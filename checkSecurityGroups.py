@@ -4,28 +4,52 @@ import re
 from netaddr import IPNetwork
 from argparse import ArgumentParser
 import sys
+import glob
 
 client = boto3.client('ec2')
 instances = {}
 security_groups = {}
 check_running = True
+verbose = False
+
 
 def main():
+    global verbose
+    global check_running
     argument_parser = ArgumentParser(description='Verify AWS security group configuration for instances')
-    argument_parser.add_argument('-v','--verbose', action='store_true', dest='verbose', default=False, help='Turn on verbose output')
+    argument_parser.add_argument('-v', '--verbose', action='store_true', dest='verbose', default=False,
+                                 help='Turn on verbose output')
+    argument_parser.add_argument('--security-group-directory',
+                                 help='Read security groups from directory with json-files, instead of running configuration')
     arguments = argument_parser.parse_args()
+    verbose = arguments.verbose
+
+    if arguments.security_group_directory is not None:
+        check_running = False
+        load_security_groups_from_directory(arguments.security_group_directory)
     set_instances_and_security_groups()
+
     with open('expected_rules.json') as expected_rules:
         rules = json.load(expected_rules)
     status = 0
     for rule in rules:
         allowed = 'Allow' if rule['IsAllowed'] else 'Deny'
         rule_ok = is_rule_ok(rule)
-        if not rule_ok or arguments.verbose:
-            print(allowed + " from " + rule['Source'] + " to " + rule['Destination'] + " " + rule[
-                'ProtocolAndRange'] + str(rule_ok))
-            status = 1
+        if not rule_ok or verbose:
+            print(allowed + ' from ' + rule['Source'] + ' to ' + rule['Destination'] + ' ' + rule[
+                'ProtocolAndRange'] + ' = ' + str(rule_ok))
+            status = status + (0 if rule_ok else 1)
+    print('Security-groups in use: ' + str(security_groups.keys()))
     sys.exit(status)
+
+
+def load_security_groups_from_directory(rules_directory):
+    files = glob.glob(rules_directory + '*.json')
+    for file_name in files:
+        with open(file_name) as security_group:
+            sg = json.load(security_group)['SecurityGroups'][0]
+            security_groups[sg['GroupId']] = sg
+
 
 def set_instances_and_security_groups():
     instances_response = client.describe_instances()
@@ -38,8 +62,8 @@ def set_instances_and_security_groups():
             ip = None
         if 'Tags' in instance['Instances'][0]:
             name = \
-            next((item for item in instance['Instances'][0]['Tags'] if item["Key"] == "Name"), {'Value': 'None'})[
-                'Value']
+                next((item for item in instance['Instances'][0]['Tags'] if item["Key"] == "Name"), {'Value': 'None'})[
+                    'Value']
             instances[id] = {'Id': id, 'Name': name, 'Ip': ip,
                              'SecurityGroups': instance_security_groups_and_rules['Group_Ids'],
                              'EffectiveIncoming': instance_security_groups_and_rules['in'],
@@ -52,9 +76,11 @@ def set_security_groups_and_rules(instance_security_groups):
     instance_effective_outgoing_rules = {}
     for group in instance_security_groups:
         instance_security_group_ids.append(group['GroupId'])
-        if group['GroupId'] not in security_groups and check_running:
+        if group['GroupId'] not in security_groups:
+            if not check_running:
+                print(group['GroupId'] + ' not in local directory, fetching from running configuration')
             security_groups[group['GroupId']] = \
-            client.describe_security_groups(GroupIds=[group['GroupId']])['SecurityGroups'][0]
+                client.describe_security_groups(GroupIds=[group['GroupId']])['SecurityGroups'][0]
         instance_effective_incoming_rules = derive_effective_rules(instance_effective_incoming_rules, group['GroupId'],
                                                                    'IpPermissions')
         instance_effective_outgoing_rules = derive_effective_rules(instance_effective_outgoing_rules, group['GroupId'],
@@ -100,7 +126,7 @@ def is_rule_ok(rule):
     if (is_allowed_by_security_group(allowed_out, src_id, allowed_in, dst_id) or is_allowed_by_ip(rule['Source'],
                                                                                                   allowed_in[
                                                                                                       'Ip']) or is_allowed_by_ip(
-            rule['Destination'], allowed_out['Ip'])) == rule['IsAllowed']:
+        rule['Destination'], allowed_out['Ip'])) == rule['IsAllowed']:
         rule_ok = True
     return rule_ok
 
