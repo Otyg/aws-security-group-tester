@@ -26,14 +26,13 @@ def main():
                                  default='expected_rules.json')
     arguments = argument_parser.parse_args()
     verbose = arguments.verbose
-
+    status = 0
+    rules = load_expected_rules_from_directory(arguments.expected_rules)
     if arguments.security_groups is not None:
         check_running = False
         load_security_groups_from_directory(arguments.security_groups)
     set_instances_and_security_groups()
-
-    rules = load_expected_rules_from_directory(arguments.expected_rules)
-    status = 0
+    rules = expand_wildcard_rules(rules)
     for rule in rules:
         allowed = 'Allow' if rule['IsAllowed'] else 'Deny'
         rule_ok = is_rule_ok(rule)
@@ -41,7 +40,6 @@ def main():
             print(allowed + ' from ' + rule['Source'] + ' to ' + rule['Destination'] + ' ' + rule[
                 'ProtocolAndRange'] + ' = ' + str(rule_ok))
             status = status + (0 if rule_ok else 1)
-    print('Security-groups in use: ' + str(security_groups.keys()))
     sys.exit(status)
 
 
@@ -138,6 +136,28 @@ def derive_effective_rules(effective_rules, group_id, field):
     return effective_rules
 
 
+def expand_wildcard_rules(rules):
+    rules.extend(expand(filter(lambda rule: rule['Destination'] == '*', rules), 'Destination'))
+    rules.extend(expand(filter(lambda rule: rule['Source'] == '*', rules), 'Source'))
+    return filter(lambda rule: (rule['Destination'] != '*' and rule['Source'] != '*'), rules)
+
+
+def expand(wildcards, source_or_destination):
+    expanded = []
+    for wildcard in wildcards:
+        for instance in instances:
+            if instances[instance]['Name'] != wildcard[source_or_destination]:
+                rule = {u'ProtocolAndRange': wildcard['ProtocolAndRange'], u'IsAllowed': wildcard['IsAllowed']}
+                if source_or_destination == 'Source':
+                    rule['Source'] = instances[instance]['Name']
+                    rule['Destination'] = wildcard['Destination']
+                else:
+                    rule['Destination'] = instances[instance]['Name']
+                    rule['Source'] = wildcard['Source']
+                expanded.append(rule)
+    return expanded
+
+
 def is_rule_ok(rule):
     rule_ok = False
     src_id = get_instance_id(rule['Source'])
@@ -147,10 +167,9 @@ def is_rule_ok(rule):
     allowed_out = get_allowed(src_id, 'EffectiveOutgoing', protocol, port_range)
     allowed_in = get_allowed(dst_id, 'EffectiveIncoming', protocol, port_range)
 
-    if (is_allowed_by_security_group(allowed_out, src_id, allowed_in, dst_id) or is_allowed_by_ip(rule['Source'],
-                                                                                                  allowed_in[
-                                                                                                      'Ip']) or is_allowed_by_ip(
-        rule['Destination'], allowed_out['Ip'])) == rule['IsAllowed']:
+    if (is_allowed_by_security_group(allowed_out, src_id, allowed_in, dst_id)
+        or is_allowed_by_ip(rule['Source'], allowed_in['Ip'])
+        or is_allowed_by_ip(rule['Destination'], allowed_out['Ip'])) == rule['IsAllowed']:
         rule_ok = True
     return rule_ok
 
