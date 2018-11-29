@@ -96,4 +96,5 @@ Rundown of the above:
 ## TODO
 - Single port values (i.e. 22 instead of 22-22)
 - Service names instead of portnumbers (i.e. ssh instead of 22)
+- Make range comparisions work
 - Support for multiple IAM profiles
